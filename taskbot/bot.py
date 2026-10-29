@@ -55,15 +55,124 @@ def _name(update: Update) -> str | None:
 # ------------------------------------------------------------------ access
 
 
+def is_allowed(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    cfg = _cfg(ctx)
+    if user_id in cfg.allowed_users or user_id in cfg.admin_ids:
+        return True
+    u = _db(ctx).user(user_id)
+    return u is not None and u.status == "allowed"
+
+
+def is_admin(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    if user_id in _cfg(ctx).admin_ids:
+        return True
+    u = _db(ctx).user(user_id)
+    return u is not None and u.is_admin and u.status == "allowed"
+
+
+def _admin_ids(ctx: ContextTypes.DEFAULT_TYPE) -> set[int]:
+    return set(_cfg(ctx).admin_ids) | {u.id for u in _db(ctx).admins()}
+
+
 async def _allowed(update: Update, ctx: ContextTypes.DEFAULT_TYPE, warn: bool = True) -> bool:
+    """True if the user may use the bot; otherwise handles the access request."""
     user = update.effective_user
-    if user and user.id in _cfg(ctx).allowed_users:
+    if user is None:
+        return False
+    if is_allowed(ctx, user.id):
         return True
     if warn and update.effective_message:
-        await update.effective_message.reply_text(
-            f"Non sei ancora abilitato. Il tuo id è <code>{user.id if user else '?'}</code>: "
-            "va aggiunto ad ALLOWED_USERS nel file .env del bot.", parse_mode=HTML)
+        await _request_access(update, ctx)
     return False
+
+
+async def _request_access(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    db, user, msg = _db(ctx), update.effective_user, update.effective_message
+    known = db.user(user.id)
+    admins = _admin_ids(ctx)
+
+    # Nobody is in charge yet: the first person who writes becomes the admin.
+    if not admins and not _cfg(ctx).allowed_users and not any(u.status == "allowed" for u in db.users()):
+        db.save_user(user.id, "allowed", user.first_name, user.username, is_admin=True)
+        await msg.reply_text(
+            "👑 Sei la prima persona: ora sei <b>amministratore</b>.\n"
+            "Quando qualcun altro scriverà al bot, ti arriverà qui la richiesta da approvare.\n\n"
+            + render.HELP, parse_mode=HTML, reply_markup=render.MENU)
+        return
+
+    if known and known.status == "blocked":
+        await msg.reply_text("Non sei abilitato a usare questo bot.")
+        return
+    if known and known.status == "pending":
+        await msg.reply_text("⏳ La tua richiesta è in attesa: ti scrivo appena vieni abilitato.")
+        return
+
+    u = db.save_user(user.id, "pending", user.first_name, user.username)
+    if not admins:
+        await msg.reply_text(
+            f"Non sei ancora abilitato. Il tuo id è <code>{user.id}</code>: chiedi a chi gestisce il bot "
+            "di aggiungerti.", parse_mode=HTML)
+        return
+    await msg.reply_text("👋 Ciao! Ho chiesto l'accesso per te: ti scrivo appena vieni abilitato.")
+    text, kb = render.access_request(u)
+    for admin_id in admins:
+        try:
+            await ctx.bot.send_message(admin_id, text, parse_mode=HTML, reply_markup=kb)
+        except TelegramError:
+            log.info("cannot notify admin %s", admin_id)
+
+
+async def _welcome(ctx: ContextTypes.DEFAULT_TYPE, user_id: int) -> None:
+    try:
+        await ctx.bot.send_message(user_id, "✅ Sei stato abilitato!\n\n" + render.HELP,
+                                   parse_mode=HTML, reply_markup=render.MENU)
+    except TelegramError:
+        log.info("cannot welcome %s", user_id)
+
+
+async def cmd_users(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _allowed(update, ctx):
+        return
+    if not is_admin(ctx, update.effective_user.id):
+        await update.effective_message.reply_text("Solo un amministratore può gestire gli utenti.")
+        return
+    text, kb = render.users_view(_db(ctx).users(), update.effective_user.id, _cfg(ctx))
+    await update.effective_message.reply_text(text, parse_mode=HTML, reply_markup=kb)
+
+
+async def _user_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE, action: str, target_id: int,
+                       from_request: bool) -> None:
+    q, db = update.callback_query, _db(ctx)
+    if not is_admin(ctx, q.from_user.id):
+        await q.answer("Solo un amministratore", show_alert=True)
+        return
+    target = db.user(target_id)
+    if target is None:
+        await q.answer("Utente sconosciuto")
+        return
+    if action == "UOK":  # approve
+        was = target.status
+        target = db.save_user(target_id, "allowed")
+        await q.answer(f"✅ {target.label} abilitato")
+        if was != "allowed":
+            await _welcome(ctx, target_id)
+    elif action == "UNO":  # reject / remove
+        if target_id in _cfg(ctx).admin_ids or target_id == q.from_user.id:
+            await q.answer("Non puoi togliere questo utente", show_alert=True)
+            return
+        target = db.save_user(target_id, "blocked", is_admin=False)
+        await q.answer(f"🚫 {target.label} non abilitato")
+    elif action == "UADM":  # toggle admin
+        target = db.save_user(target_id, target.status, is_admin=not target.is_admin)
+        await q.answer("👑 Ora è amministratore" if target.is_admin else "Non è più amministratore")
+
+    if from_request:
+        verdict = "✅ abilitato" if target.status == "allowed" else "🚫 rifiutato"
+        await _edit(ctx, q.message.chat_id, q.message.message_id,
+                    f"🔔 {escape(target.label)}: {verdict} da {escape(q.from_user.first_name)}", None)
+    else:
+        text, kb = render.users_view(db.users(), q.from_user.id, _cfg(ctx))
+        await _edit(ctx, q.message.chat_id, q.message.message_id, text, kb)
 
 
 # ------------------------------------------------------------------- views
@@ -338,7 +447,7 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     q = update.callback_query
-    if q.from_user.id not in _cfg(ctx).allowed_users:
+    if not is_allowed(ctx, q.from_user.id):
         await q.answer("Non autorizzato", show_alert=True)
         return
     db, cfg = _db(ctx), _cfg(ctx)
@@ -347,7 +456,10 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     action, _, arg = q.data.partition(":")
     args = arg.split(":") if arg else []
 
-    if action == "noop":
+    if action in ("UOK", "UNO", "UADM"):
+        await _user_button(update, ctx, action, int(args[0]), from_request=args[1:] == ["n"])
+
+    elif action == "noop":
         await q.answer()
 
     elif action == "X":  # close a photo / audio message
@@ -501,6 +613,7 @@ async def _post_init(app: Application) -> None:
         BotCommand("dafare", "Cosa c'è da fare"),
         BotCommand("fatte", "Cosa è stato fatto (es. /fatte 30)"),
         BotCommand("aiuto", "Come funziona"),
+        BotCommand("utenti", "Chi può usare il bot (amministratori)"),
     ])
     t = app.bot_data["transcriber"]
     if isinstance(t, LocalWhisper):
@@ -525,6 +638,7 @@ def create_app(cfg: Config, db: DB, transcriber: Transcriber | None = None) -> A
     app.add_handler(CommandHandler(["aiuto", "help"], cmd_help, filters=private))
     app.add_handler(CommandHandler(["dafare", "todo", "lista"], show_todo, filters=private))
     app.add_handler(CommandHandler(["fatte", "fatti", "done"], show_done, filters=private))
+    app.add_handler(CommandHandler(["utenti", "users"], cmd_users, filters=private))
     app.add_handler(MessageHandler(private & filters.Text([render.BTN_TODO]), show_todo))
     app.add_handler(MessageHandler(private & filters.Text([render.BTN_DONE]), show_done))
     app.add_handler(MessageHandler(private & filters.TEXT & ~filters.COMMAND, on_text))

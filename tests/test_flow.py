@@ -119,7 +119,7 @@ async def env(tmp_path):
     fake = FakeTelegram()
     db = DB(tmp_path / "t.sqlite3")
     tr = FakeTranscriber()
-    cfg = Config(token="1:FAKE", allowed_users=frozenset({ANNA, BRUNO}))
+    cfg = Config(token="1:FAKE", admin_ids=frozenset({ANNA}), allowed_users=frozenset({BRUNO}))
     app = create_app(cfg, db, transcriber=tr)
     app.bot._request = (fake, fake)
     await app.initialize()
@@ -288,14 +288,60 @@ async def test_delete_with_confirm(env):
     assert db.open_tasks() == []
 
 
-async def test_stranger_gets_id_and_nothing_else(env):
+async def test_stranger_requests_access_and_admin_approves(env):
     send, fake, db, _ = env
     await send(message("ciao", user=STRANGER))
-    assert str(STRANGER) in fake.last("sendMessage")["text"]
-    assert db.open_tasks() == []
+    assert any("Ho chiesto l'accesso" in p["text"] for p in fake.all("sendMessage") if int(p["chat_id"]) == STRANGER)
+    assert db.open_tasks() == []  # the message did not become a task
+    request = next(p for p in fake.all("sendMessage") if int(p["chat_id"]) == ANNA)
+    assert "Tizio" in request["text"] and callbacks(request) == [f"UOK:{STRANGER}:n", f"UNO:{STRANGER}:n"]
+
+    # writing again doesn't spam the admin
+    fake.calls.clear()
+    await send(message("ci sei?", user=STRANGER))
+    assert "in attesa" in fake.last("sendMessage")["text"]
+    assert not [p for p in fake.all("sendMessage") if int(p["chat_id"]) == ANNA]
+
+    # a stranger can't press buttons
     t = db.add_task("X")
     await send(tap(f"D:{t.id}:0", 1, user=STRANGER))
     assert db.task(t.id).status == "open"
+    # a non-admin can't approve
+    await send(tap(f"UOK:{STRANGER}:n", 1, user=BRUNO))
+    assert db.user(STRANGER).status == "pending"
+
+    # the admin approves: the request is updated and the new user is welcomed
+    fake.calls.clear()
+    await send(tap(f"UOK:{STRANGER}:n", 4000))
+    assert "abilitato da Anna" in fake.last("editMessageText")["text"]
+    welcome = next(p for p in fake.all("sendMessage") if int(p["chat_id"]) == STRANGER)
+    assert "Sei stato abilitato" in welcome["text"] and "keyboard" in welcome["reply_markup"]
+    await send(message("Pulire grondaie", user=STRANGER))
+    assert [x.title for x in db.open_tasks()] == ["X", "Pulire grondaie"]
+
+
+async def test_rejected_user_stays_out(env):
+    send, fake, db, _ = env
+    await send(message("ciao", user=STRANGER))
+    await send(tap(f"UNO:{STRANGER}:n", 4000))
+    assert db.user(STRANGER).status == "blocked"
+    fake.calls.clear()
+    await send(message("ciao", user=STRANGER))
+    assert "Non sei abilitato" in fake.last("sendMessage")["text"]
+    assert not [p for p in fake.all("sendMessage") if int(p["chat_id"]) == ANNA]
+
+
+async def test_users_command_admin_only(env):
+    send, fake, db, _ = env
+    await send(message("ciao", user=STRANGER))
+    await send(message("/utenti", user=BRUNO))
+    assert "Solo un amministratore" in fake.last("sendMessage")["text"]
+    await send(message("/utenti"))
+    view = fake.last("sendMessage")
+    assert "⏳ Tizio" in view["text"] and f"UOK:{STRANGER}" in callbacks(view)
+    await send(tap(f"UOK:{STRANGER}", 4001))
+    assert "✅ Tizio" in fake.last("editMessageText")["text"]
+    assert f"UADM:{STRANGER}" in callbacks(fake.last("editMessageText"))
 
 
 async def test_paging(env):
@@ -306,3 +352,39 @@ async def test_paging(env):
     assert "L:1" in callbacks(view) and len([c for c in callbacks(view) if c.startswith("O:")]) == 8
     await send(tap("L:1", view_id))
     assert len([c for c in callbacks(fake.last("editMessageText")) if c.startswith("O:")]) == 3
+
+
+async def test_first_user_becomes_admin(tmp_path):
+    fake = FakeTelegram()
+    db = DB(tmp_path / "t.sqlite3")
+    app = create_app(Config(token="1:FAKE"), db, transcriber=FakeTranscriber())
+    app.bot._request = (fake, fake)
+    await app.initialize()
+    try:
+        await app.process_update(Update.de_json(message("/start", user=BRUNO), app.bot))
+        assert "ora sei <b>amministratore</b>" in fake.last("sendMessage")["text"]
+        assert db.user(BRUNO).is_admin and db.user(BRUNO).status == "allowed"
+        await app.process_update(Update.de_json(message("ciao", user=STRANGER), app.bot))
+        assert any(int(p["chat_id"]) == BRUNO and "vuole usare il bot" in p["text"]
+                   for p in fake.all("sendMessage"))
+        assert not db.user(STRANGER).is_admin
+    finally:
+        await app.shutdown()
+
+
+def test_cli(tmp_path, monkeypatch, capsys):
+    import sys
+
+    from taskbot.__main__ import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "cli.sqlite3"))
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    for argv in (["users", "add", "123", "Mario", "--admin"], ["users", "add", "456"],
+                 ["users", "remove", "456"], ["users", "list"]):
+        monkeypatch.setattr(sys, "argv", ["taskbot", *argv])
+        main()
+    out = capsys.readouterr().out
+    assert "Mario (123) allowed as admin" in out and "removed" in out
+    db = DB(tmp_path / "cli.sqlite3")
+    assert db.user(123).is_admin and db.user(456).status == "blocked"

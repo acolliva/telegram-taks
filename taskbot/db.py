@@ -31,6 +31,16 @@ CREATE TABLE IF NOT EXISTS photos (
 );
 CREATE INDEX IF NOT EXISTS photos_task ON photos(task_id);
 
+-- People who can use the bot (approved from Telegram by an admin, or with the CLI).
+CREATE TABLE IF NOT EXISTS users (
+    id          INTEGER PRIMARY KEY,           -- Telegram user id
+    name        TEXT,
+    username    TEXT,
+    status      TEXT NOT NULL,                 -- allowed | pending | blocked
+    is_admin    INTEGER NOT NULL DEFAULT 0,
+    updated_at  TEXT NOT NULL
+);
+
 -- The to-do list message currently open in each chat, kept up to date silently.
 CREATE TABLE IF NOT EXISTS views (
     chat_id     INTEGER PRIMARY KEY,
@@ -87,6 +97,24 @@ class View:
     message_id: int
     kind: str
     page: int
+
+
+@dataclass
+class User:
+    id: int
+    name: str | None
+    username: str | None
+    status: str
+    is_admin: bool
+
+    @property
+    def label(self) -> str:
+        n = self.name or str(self.id)
+        return f"{n} (@{self.username})" if self.username else n
+
+    @classmethod
+    def from_row(cls, r: sqlite3.Row) -> User:
+        return cls(r["id"], r["name"], r["username"], r["status"], bool(r["is_admin"]))
 
 
 class DB:
@@ -192,6 +220,35 @@ class DB:
     def photos(self, task_id: int) -> list[str]:
         return [r["file_id"] for r in self.conn.execute(
             "SELECT file_id FROM photos WHERE task_id = ? ORDER BY id", (task_id,))]
+
+    # ------------------------------------------------------------------ users
+    def user(self, user_id: int) -> User | None:
+        r = self.conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return User.from_row(r) if r else None
+
+    def users(self) -> list[User]:
+        order = "CASE status WHEN 'pending' THEN 0 WHEN 'allowed' THEN 1 ELSE 2 END, is_admin DESC, name"
+        return [User.from_row(r) for r in self.conn.execute(f"SELECT * FROM users ORDER BY {order}")]
+
+    def admins(self) -> list[User]:
+        return [User.from_row(r) for r in self.conn.execute(
+            "SELECT * FROM users WHERE is_admin = 1 AND status = 'allowed'")]
+
+    def save_user(self, user_id: int, status: str, name: str | None = None, username: str | None = None,
+                  is_admin: bool | None = None) -> User:
+        """Insert or update; name/username/is_admin are kept when not given."""
+        old = self.user(user_id)
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO users(id, name, username, status, is_admin, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, name if name is not None else (old.name if old else None),
+                 username if username is not None else (old.username if old else None), status,
+                 int(is_admin if is_admin is not None else (old.is_admin if old else False)), _iso(now_utc())))
+        return self.user(user_id)
+
+    def delete_user(self, user_id: int) -> bool:
+        with self.conn:
+            return self.conn.execute("DELETE FROM users WHERE id = ?", (user_id,)).rowcount > 0
 
     # ------------------------------------------------------------------ views
     def set_view(self, chat_id: int, message_id: int, kind: str, page: int = 0) -> int | None:

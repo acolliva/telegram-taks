@@ -1,20 +1,24 @@
 [project]
 name = "taskbot"
-version = "0.1.0"
-description = "Telegram bot for shared household tasks"
+version = "0.2.0"
+description = "Telegram bot for a shared household to-do list"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = ["python-telegram-bot>=22,<23"]
 
 [project.optional-dependencies]
+# Italian voice notes transcribed on the Raspberry itself: uv sync --extra voice
 voice = ["faster-whisper>=1.0"]
-dev = ["pytest", "pytest-asyncio"]
+
+[project.scripts]
+taskbot = "taskbot.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-packages = ["taskbot"]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

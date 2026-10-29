@@ -3,7 +3,7 @@
 Two engines, chosen with TRANSCRIBER in .env:
 
 - ``local``: faster-whisper running on the Raspberry itself (free, private, a bit slow).
-  Install with ``pip install -r requirements-voice.txt``. The model is downloaded on first use.
+  Install with ``uv sync --extra voice``. The model is downloaded on first use.
 - ``openai``: OpenAI's transcription API (fast and accurate, costs a fraction of a cent per note).
 - ``off``: voice notes are stored as tasks with the audio attached but no text.
 """

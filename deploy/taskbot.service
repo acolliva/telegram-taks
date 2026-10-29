@@ -1,7 +1,10 @@
 # systemd unit for the Raspberry.
-# Copy to /etc/systemd/system/taskbot.service, adjust User and the three paths
+# Copy to /etc/systemd/system/taskbot.service, adjust User and the paths
 # (they must match the folder name exactly, capitals included), then:
 #   sudo systemctl daemon-reload && sudo systemctl enable --now taskbot
+#
+# It runs the program from the .venv created by `uv sync`, so uv isn't needed at runtime
+# and the voice extra (if you installed it) is kept.
 [Unit]
 Description=Task bot - shared to-do list on Telegram
 After=network-online.target
@@ -9,9 +12,9 @@ Wants=network-online.target
 
 [Service]
 User=nonno
-WorkingDirectory=/home/nonno/task-reminder-telegram
-EnvironmentFile=/home/nonno/task-reminder-telegram/.env
-ExecStart=/home/nonno/task-reminder-telegram/.venv/bin/python -m taskbot
+WorkingDirectory=/home/nonno/telegram-taks
+EnvironmentFile=/home/nonno/telegram-taks/.env
+ExecStart=/home/nonno/telegram-taks/.venv/bin/taskbot
 Restart=always
 RestartSec=10
 

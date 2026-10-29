@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
-from .db import Task
+from .db import Task, User
 from .text import fmt_age, fmt_day_heading, fmt_when
 
 PAGE_SIZE = 8
@@ -192,6 +192,43 @@ def added(tasks: list[Task], transcript: str | None = None) -> tuple[str, Inline
 def details_prompt(t: Task) -> tuple[str, InlineKeyboardMarkup]:
     return (f"✏️ Aggiungi dettagli a <b>{escape(t.title)}</b>: scrivi, manda foto o un vocale.",
             InlineKeyboardMarkup([[B("✔️ Fine", callback_data="N")]]))
+
+
+# ------------------------------------------------------------------- users
+
+
+def access_request(u: User) -> tuple[str, InlineKeyboardMarkup]:
+    text = f"🔔 <b>{escape(u.label)}</b> vuole usare il bot (id <code>{u.id}</code>)."
+    # ":n" = pressed on a request notification (the message becomes the verdict)
+    return text, InlineKeyboardMarkup([[B("✅ Abilita", callback_data=f"UOK:{u.id}:n"),
+                                        B("🚫 Rifiuta", callback_data=f"UNO:{u.id}:n")]])
+
+
+def users_view(users: list[User], me: int, cfg) -> tuple[str, InlineKeyboardMarkup]:
+    lines = ["👥 <b>Utenti</b>", ""]
+    rows = []
+    fixed = set(cfg.admin_ids) | set(cfg.allowed_users)
+    if fixed:
+        lines.append(f"<i>Fissi nel .env: {', '.join(str(i) for i in sorted(fixed))}</i>")
+    icons = {"allowed": "✅", "pending": "⏳", "blocked": "🚫"}
+    for u in users:
+        admin = u.is_admin or u.id in cfg.admin_ids
+        lines.append(f"{icons.get(u.status, '')} {escape(u.label)}" + (" 👑" if admin else "")
+                     + (" <i>(tu)</i>" if u.id == me else ""))
+        if u.id == me or u.id in cfg.admin_ids:
+            continue
+        name = _short(u.name or str(u.id), 18)
+        if u.status == "pending":
+            rows.append([B(f"✅ {name}", callback_data=f"UOK:{u.id}"), B("🚫", callback_data=f"UNO:{u.id}")])
+        elif u.status == "allowed":
+            rows.append([B(f"🚫 Togli {name}", callback_data=f"UNO:{u.id}"),
+                         B("👑 Admin" if not u.is_admin else "👑 Non admin", callback_data=f"UADM:{u.id}")])
+        else:
+            rows.append([B(f"✅ Riabilita {name}", callback_data=f"UOK:{u.id}")])
+    if not users:
+        lines.append("<i>Nessuno ancora.</i>")
+    lines += ["", "Chi scrive al bot per la prima volta ti manda una richiesta da approvare."]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 HELP = f"""<b>Come funziona</b>

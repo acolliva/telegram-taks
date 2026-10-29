@@ -26,7 +26,8 @@ def _ids(raw: str) -> frozenset[int]:
 @dataclass
 class Config:
     token: str
-    allowed_users: frozenset[int]
+    allowed_users: frozenset[int] = frozenset()   # fixed list in .env (optional)
+    admin_ids: frozenset[int] = frozenset()       # fixed admins in .env (optional)
     db_path: str = "tasks.sqlite3"
     tz: ZoneInfo = ZoneInfo("Europe/Rome")
     done_days: int = 7
@@ -36,14 +37,15 @@ class Config:
     openai_model: str = "gpt-4o-mini-transcribe"
 
     @classmethod
-    def from_env(cls) -> Config:
+    def from_env(cls, require_token: bool = True) -> Config:
         _load_dotenv()
         token = os.environ.get("BOT_TOKEN", "").strip()
-        if not token:
+        if require_token and not token:
             raise SystemExit("BOT_TOKEN is missing (see .env.example)")
         return cls(
             token=token,
             allowed_users=_ids(os.environ.get("ALLOWED_USERS", "")),
+            admin_ids=_ids(os.environ.get("ADMIN_USERS", "")),
             db_path=os.environ.get("DB_PATH", "tasks.sqlite3"),
             tz=ZoneInfo(os.environ.get("TIMEZONE", "Europe/Rome")),
             done_days=int(os.environ.get("DONE_DAYS", "7")),

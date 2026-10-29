@@ -29,33 +29,62 @@ Each addition gets a short confirmation with **↩️ Annulla** and **➕ Dettag
 
 The chat stays tidy: tapping a menu button removes your message and the previous list, so there's always one list at the bottom. If someone adds or completes a task while your list is open, the list updates silently, without any notification.
 
-Commands: `/dafare`, `/fatte [days]`, `/aiuto`.
+Commands: `/dafare`, `/fatte [days]`, `/aiuto`, and `/utenti` for admins.
 
 ## Setup
 
 ### 1. Create the bot
 Send `/newbot` to **@BotFather** and copy the token.
 
-### 2. On the Raspberry
-Python ≥ 3.11 is required, which comes with Raspberry Pi OS Bookworm.
+### 2. On the Raspberry (with uv)
+
+Install uv once if you don't have it, then open a new shell:
 
 ```bash
-git clone https://github.com/acolliva/telegram-taks.git ~/task-reminder-telegram
-cd ~/task-reminder-telegram
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env && nano .env    # BOT_TOKEN
-.venv/bin/python -m taskbot
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-Then each person writes anything to the bot. People who aren't allowed yet get a reply with their id. Put the ids in `ALLOWED_USERS` (comma separated) and restart.
+Then:
 
-### 3. Voice notes
+```bash
+git clone https://github.com/acolliva/telegram-taks.git ~/telegram-taks
+cd ~/telegram-taks
+uv sync                              # creates .venv with everything needed
+cp .env.example .env && nano .env    # put BOT_TOKEN
+uv run taskbot                       # try it: Ctrl+C to stop
+```
+
+uv installs a suitable Python by itself if the system one is older than 3.11.
+
+### 3. Who can use the bot
+
+There's nothing to configure.
+
+1. **You write to the bot first** (anything, or /start). The first person becomes **admin** 👑.
+2. **Anyone else who writes** is told "Ho chiesto l'accesso", and you get a message:
+   > 🔔 **Maria** vuole usare il bot  [✅ Abilita] [🚫 Rifiuta]
+
+   Tap **Abilita**. Maria immediately receives a welcome with the menu buttons, with no restart and no file editing.
+3. **/utenti** (admins only) lists everyone: ✅ allowed, ⏳ waiting, 🚫 refused. Buttons let you approve, remove, re-enable, or make someone admin.
+
+People who were refused aren't asked about again. You can re-enable them from /utenti.
+
+From the Raspberry's shell, the same is possible without Telegram:
+
+```bash
+uv run taskbot users                    # list
+uv run taskbot users add 123456789 Maria --admin
+uv run taskbot users remove 123456789
+```
+
+Changes take effect immediately. If you'd rather fix the list in configuration, `ADMIN_USERS` and `ALLOWED_USERS` in `.env` take comma-separated ids and are always allowed.
+
+### 4. Voice notes
 Choose one option in `.env`:
 
 - **`TRANSCRIBER=local`** runs Whisper on the Pi. It's free and nothing leaves the house.
   ```bash
-  .venv/bin/pip install -r requirements-voice.txt
+  uv sync --extra voice
   ```
   The model downloads from Hugging Face on first start (~500 MB for `small`). On a Pi 4, a 10-second note takes roughly 10–30 s with `small`, or a few seconds with `base`, which is less accurate. The bot shows "🎙️ Trascrivo…" meanwhile, and other people aren't blocked.
 - **`TRANSCRIBER=openai`** with `OPENAI_API_KEY` is fast and very accurate in Italian, but paid per use.
@@ -63,34 +92,41 @@ Choose one option in `.env`:
 
 If transcription fails for any reason, the voice note is still saved with its audio.
 
-### 4. Start automatically
+### 5. Start automatically
 
 ```bash
 sudo cp deploy/taskbot.service /etc/systemd/system/
-sudo nano /etc/systemd/system/taskbot.service   # User and paths: match the folder name exactly
+sudo nano /etc/systemd/system/taskbot.service   # User and paths if you're not "nonno" in ~/telegram-taks
 sudo systemctl daemon-reload
 sudo systemctl enable --now taskbot
 journalctl -u taskbot -f
 ```
 
-**Updating:** `cd ~/task-reminder-telegram && git pull && sudo systemctl restart taskbot`
+The service runs `.venv/bin/taskbot` directly, so uv isn't needed at runtime.
+
+**Updating** (add `--extra voice` if you use local transcription):
+
+```bash
+cd ~/telegram-taks && git pull && uv sync && sudo systemctl restart taskbot
+```
 
 **Backup:** `sqlite3 tasks.sqlite3 ".backup backup.sqlite3"`
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest
+uv sync
+uv run pytest
 ```
 
-`tests/test_flow.py` drives the whole bot against a fake Telegram API, covering adding, lists, done/undo, photos, albums, voice, details, deletion, paging and permissions. It needs no token or network.
+`tests/test_flow.py` drives the whole bot against a fake Telegram API, covering adding, lists, done/undo, photos, albums, voice, details, deletion, paging, access requests and the users CLI. It needs no token or network.
 
 ```
 taskbot/
   text.py        message → tasks, Italian date formatting
-  db.py          SQLite: tasks, photos, open views
+  db.py          SQLite: tasks, photos, users, open views
   render.py      texts and buttons
   transcribe.py  voice → text (faster-whisper / OpenAI / off)
   bot.py         Telegram handlers
+  __main__.py    `taskbot` command: run the bot, manage users
 ```
