@@ -139,7 +139,7 @@ async def open_list(send, fake, db, user=ANNA):
 async def test_add_view_done_undo(env):
     send, fake, db, _ = env
     await send(message("Cambiare lampadina bagno"))
-    assert "Aggiunta: <b>Cambiare lampadina bagno</b>" in fake.last("sendMessage")["text"]
+    assert "Aggiunta: 🟡 <b>Cambiare lampadina bagno</b>" in fake.last("sendMessage")["text"]
     await send(message("- chiamare idraulico\n- pagare bolletta luce", user=BRUNO))
     assert "Aggiunte 2 attività" in fake.last("sendMessage")["text"]
 
@@ -388,3 +388,64 @@ def test_cli(tmp_path, monkeypatch, capsys):
     assert "Mario (123) allowed as admin" in out and "removed" in out
     db = DB(tmp_path / "cli.sqlite3")
     assert db.user(123).is_admin and db.user(456).status == "blocked"
+
+
+async def test_priority_buttons_and_order(env):
+    send, fake, db, _ = env
+    await send(message("Sistemare cantina"))
+    await send(message("Riparare tapparella"))
+    confirm = fake.last("sendMessage")
+    tapparella = db.open_tasks()[-1]
+    assert callbacks(confirm)[:3] == [f"PR:{tapparella.id}:1:c", f"PR:{tapparella.id}:2:c", f"PR:{tapparella.id}:3:c"]
+    assert buttons(confirm)[1]["text"] == "✓ 🟡 Normale"
+
+    # one tap on the confirmation makes it urgent; the confirmation shows it
+    await send(tap(f"PR:{tapparella.id}:1:c", 3000))
+    assert db.task(tapparella.id).priority == 1
+    edited = fake.last("editMessageText")
+    assert "🔴 <b>Riparare tapparella</b>" in edited["text"] and buttons(edited)[0]["text"] == "✓ 🔴 Alta"
+
+    await send(message("con calma: riordinare garage"))
+    await send(message("! perdita lavandino"))
+
+    view_id, view = await open_list(send, fake, db)
+    rows = [b["text"] for b in buttons(view) if b["callback_data"].startswith("O:")]
+    assert rows == ["🔴 Riparare tapparella", "🔴 Perdita lavandino", "🟡 Sistemare cantina", "⚪ Riordinare garage"]
+    assert "🔴 2 · 🟡 1 · ⚪ 1" in view["text"]
+
+    # change from the detail view
+    cantina = next(t for t in db.open_tasks() if t.title == "Sistemare cantina")
+    await send(tap(f"O:{cantina.id}", view_id))
+    detail = fake.last("editMessageText")
+    assert "🟡 Priorità normale" in detail["text"] and f"PR:{cantina.id}:3" in callbacks(detail)
+    await send(tap(f"PR:{cantina.id}:3", view_id))
+    assert db.task(cantina.id).priority == 3
+    assert "⚪ Priorità bassa" in fake.last("editMessageText")["text"]
+
+
+async def test_voice_urgent(env):
+    send, fake, db, tr = env
+    tr.text = "chiamare il tecnico della caldaia, è urgente"
+    await send(message(voice="V9"))
+    assert db.open_tasks()[0].priority == 1
+
+
+def test_old_database_gets_priority_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    old = sqlite3.connect(path)
+    old.executescript("""
+        CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+            author_id INTEGER, author_name TEXT, created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open', done_at TEXT, done_by_id INTEGER, done_by_name TEXT,
+            voice_file_id TEXT, from_voice INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO tasks(title, created_at) VALUES ('Vecchia', '2026-10-01T10:00:00+00:00');
+    """)
+    old.commit()
+    old.close()
+    db = DB(path)
+    t = db.open_tasks()[0]
+    assert t.title == "Vecchia" and t.priority == 2
+    db.set_priority(t.id, 1)
+    assert db.task(t.id).priority == 1

@@ -24,7 +24,7 @@ from telegram.ext import (
 from . import render
 from .config import Config
 from .db import DB, Task, now_utc
-from .text import clean_transcript, parse_tasks, split_title
+from .text import NORMAL, clean_transcript, parse_tasks, spoken_priority, split_title, take_priority
 from .transcribe import LocalWhisper, NoTranscriber, Transcriber, make_transcriber
 
 log = logging.getLogger(__name__)
@@ -332,7 +332,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     user = update.effective_user
-    tasks = [db.add_task(title, notes, user.id, user.first_name) for title, notes in parse_tasks(text)]
+    tasks = [db.add_task(title, notes, user.id, user.first_name, priority=prio)
+             for title, notes, prio in parse_tasks(text)]
     if not tasks:
         return
     reply, kb = render.added(tasks)
@@ -382,8 +383,9 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             await refresh_lists(ctx)
             return
 
+    prio, caption = take_priority(caption)
     title, notes = split_title(caption) if caption else (render.PH_PHOTO, "")
-    t = db.add_task(title, notes, user.id, user.first_name)
+    t = db.add_task(title, notes, user.id, user.first_name, priority=prio or NORMAL)
     if msg.media_group_id:
         groups[msg.media_group_id] = t.id
         if len(groups) > 200:
@@ -427,11 +429,15 @@ async def on_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await refresh_lists(ctx)
         return
 
+    prio = NORMAL
     if transcript:
-        title, notes = split_title(transcript)
+        start_prio, text = take_priority(transcript)  # "Urgente, chiamare il tecnico…"
+        prio = start_prio or spoken_priority(transcript) or NORMAL
+        title, notes = split_title(text)
     else:
         title, notes = render.PH_VOICE, ""
-    t = db.add_task(title, notes, user.id, user.first_name, voice_file_id=voice.file_id, from_voice=True)
+    t = db.add_task(title, notes, user.id, user.first_name, voice_file_id=voice.file_id, from_voice=True,
+                    priority=prio)
     reply, kb = render.added([t], transcript=transcript or None)
     if not transcript and status:
         reply += "\n<i>Non sono riuscito a trascriverla: l'audio è salvato con l'attività.</i>"
@@ -519,6 +525,21 @@ async def on_button(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             text, kb = render.task_detail(db.task(int(args[0])), cfg.tz, now_utc())
             await _show_in(ctx, q.message, "detail", text, kb)
         await refresh_lists(ctx, except_chat=chat_id)
+
+    elif action == "PR":  # set priority (from the confirmation ":c" or from the detail view)
+        t = db.set_priority(int(args[0]), int(args[1]))
+        if t is None or t.status == "deleted":
+            await q.answer("Attività non più presente")
+            return
+        icon, label = render.PRIORITIES[t.priority]
+        await q.answer(f"{icon} Priorità {label.lower()}")
+        if args[2:] == ["c"]:
+            text, kb = render.added([t])
+            await _edit(ctx, chat_id, q.message.message_id, text, kb)
+        else:
+            text, kb = render.task_detail(t, cfg.tz, now_utc())
+            await _show_in(ctx, q.message, "detail", text, kb)
+        await refresh_lists(ctx, except_chat=None if args[2:] == ["c"] else chat_id)
 
     elif action == "P":  # photo viewer: one message, browse with arrows
         t = db.task(int(args[0]))

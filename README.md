@@ -19,9 +19,14 @@ It runs on a Raspberry Pi with long polling: no public IP, open ports or domain 
 | a photo without a caption, within 3 minutes of adding a task | attached to that task (with ↩️ to undo) |
 | a voice note | transcribed into a task; the audio is kept and can be played back |
 
+**Priority** has three levels: 🔴 Alta, 🟡 Normale (the default) and ⚪ Bassa.
+- **After adding:** the confirmation has three buttons, so it takes one tap. You can also change it later from the task's details.
+- **While writing:** start with `urgente:` or `!` for high (`urgente: caldaia`, `! perdita lavandino`), or `con calma:` / `quando capita:` for low. A word at the top of a list applies to every item (`Urgente:` + `- a` + `- b`). One at the start of an item applies only to that item.
+- **By voice:** just say "urgente" or "con calma" anywhere in the note.
+
 Each addition gets a short confirmation with **↩️ Annulla** and **➕ Dettagli**. Details mode lets you add text, photos or voice to the task until you tap ✔️ Fine.
 
-**📋 Da fare** shows the open tasks, oldest first. Next to each task are its icons (📷 photo, 🎙 voice, 📝 notes) and how long it has been waiting.
+**📋 Da fare** shows the open tasks, most urgent first and oldest first within each level. The header counts tasks by level (🔴 2 · 🟡 4 · ⚪ 1). Next to each task are its priority dot, its icons (📷 photo, 🎙 voice, 📝 notes) and how long it has been waiting.
 - Tap a task to open its details: notes, who added it and when, 📷 photos (browsed in a single message, with ✖ to close), 🔊 audio, ➕ add details, 🗑 delete.
 - Tap ☑️ to mark it done. **↩️ Annulla «…»** stays in the list for 15 minutes in case of a mistake.
 

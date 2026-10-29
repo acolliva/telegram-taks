@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     done_by_id     INTEGER,
     done_by_name   TEXT,
     voice_file_id  TEXT,
-    from_voice     INTEGER NOT NULL DEFAULT 0
+    from_voice     INTEGER NOT NULL DEFAULT 0,
+    priority       INTEGER NOT NULL DEFAULT 2      -- 1 high | 2 normal | 3 low
 );
 CREATE INDEX IF NOT EXISTS tasks_status ON tasks(status, done_at);
 
@@ -77,6 +78,7 @@ class Task:
     done_by_name: str | None
     voice_file_id: str | None
     from_voice: bool
+    priority: int = 2
     photo_count: int = 0
 
     @classmethod
@@ -84,7 +86,7 @@ class Task:
         return cls(
             r["id"], r["title"], r["notes"], r["author_id"], r["author_name"], _dt(r["created_at"]),
             r["status"], _dt(r["done_at"]), r["done_by_id"], r["done_by_name"], r["voice_file_id"],
-            bool(r["from_voice"]), r["photo_count"] if "photo_count" in r.keys() else 0,
+            bool(r["from_voice"]), r["priority"], r["photo_count"] if "photo_count" in r.keys() else 0,
         )
 
 
@@ -124,17 +126,24 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        """Bring databases created by older versions up to date."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(tasks)")}
+        if "priority" not in cols:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 2")
 
     # ------------------------------------------------------------------ tasks
     def add_task(self, title: str, notes: str = "", author_id: int | None = None,
                  author_name: str | None = None, voice_file_id: str | None = None,
-                 from_voice: bool = False, at: datetime | None = None) -> Task:
+                 from_voice: bool = False, at: datetime | None = None, priority: int = 2) -> Task:
         with self.conn:
             cur = self.conn.execute(
-                "INSERT INTO tasks(title, notes, author_id, author_name, created_at, voice_file_id, from_voice) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (title, notes, author_id, author_name, _iso(at or now_utc()), voice_file_id, int(from_voice)),
+                "INSERT INTO tasks(title, notes, author_id, author_name, created_at, voice_file_id, from_voice, priority) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (title, notes, author_id, author_name, _iso(at or now_utc()), voice_file_id, int(from_voice), priority),
             )
         return self.task(cur.lastrowid)
 
@@ -143,8 +152,16 @@ class DB:
         return Task.from_row(r) if r else None
 
     def open_tasks(self) -> list[Task]:
-        """Oldest first: what has been waiting longest is on top."""
-        return [Task.from_row(r) for r in self.conn.execute(f"{_SELECT} WHERE t.status = 'open' ORDER BY t.id")]
+        """Most urgent first; within the same priority, what has been waiting longest."""
+        return [Task.from_row(r) for r in self.conn.execute(
+            f"{_SELECT} WHERE t.status = 'open' ORDER BY t.priority, t.id")]
+
+    def set_priority(self, task_id: int, priority: int) -> Task | None:
+        if priority not in (1, 2, 3):
+            raise ValueError(priority)
+        with self.conn:
+            n = self.conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (priority, task_id)).rowcount
+        return self.task(task_id) if n else None
 
     def done_since(self, since: datetime) -> list[Task]:
         """Most recently done first."""

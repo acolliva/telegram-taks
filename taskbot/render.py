@@ -25,6 +25,19 @@ PH_VOICE = "🎙️ Nota vocale"
 PLACEHOLDERS = (PH_PHOTO, PH_VOICE)
 
 
+PRIORITIES = {1: ("🔴", "Alta"), 2: ("🟡", "Normale"), 3: ("⚪", "Bassa")}
+
+
+def prio_icon(p: int) -> str:
+    return PRIORITIES.get(p, PRIORITIES[2])[0]
+
+
+def priority_row(t: Task, suffix: str = "") -> list:
+    """Three buttons to set the priority; the current one is ticked."""
+    return [B(("✓ " if t.priority == p else "") + f"{icon} {label}", callback_data=f"PR:{t.id}:{p}{suffix}")
+            for p, (icon, label) in PRIORITIES.items()]
+
+
 def _short(s: str, n: int = 48) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
@@ -44,6 +57,9 @@ def todo_list(tasks: list[Task], page: int, now: datetime, undo: Task | None,
 
     if tasks:
         lines = [f"📋 <b>Da fare</b> · {len(tasks)}"]
+        counts = [f"{prio_icon(p)} {n}" for p in (1, 2, 3) if (n := sum(t.priority == p for t in tasks))]
+        if len(counts) > 1 or tasks[0].priority != 2:
+            lines.append(" · ".join(counts))
         if done_today:
             lines.append(f"✅ {done_today} {'fatta' if done_today == 1 else 'fatte'} oggi")
         lines += ["", "Tocca un'attività per i dettagli, ☑️ quando è fatta."]
@@ -56,7 +72,7 @@ def todo_list(tasks: list[Task], page: int, now: datetime, undo: Task | None,
     rows = []
     for t in shown:
         age = fmt_age(t.created_at, now)
-        label = _short(t.title) + _icons(t) + (f" · {age}" if age else "")
+        label = f"{prio_icon(t.priority)} " + _short(t.title) + _icons(t) + (f" · {age}" if age else "")
         rows.append([B(label, callback_data=f"O:{t.id}"), B("☑️", callback_data=f"D:{t.id}:{page}")])
     if pages > 1:
         rows.append([
@@ -74,7 +90,8 @@ def todo_list(tasks: list[Task], page: int, now: datetime, undo: Task | None,
 
 
 def task_detail(t: Task, tz: ZoneInfo, now: datetime) -> tuple[str, InlineKeyboardMarkup]:
-    lines = [f"📝 <b>{escape(t.title)}</b>"]
+    icon, label = PRIORITIES.get(t.priority, PRIORITIES[2])
+    lines = [f"📝 <b>{escape(t.title)}</b>", f"{icon} Priorità {label.lower()}"]
     if t.notes:
         lines += ["", escape(t.notes)]
     lines.append("")
@@ -88,6 +105,7 @@ def task_detail(t: Task, tz: ZoneInfo, now: datetime) -> tuple[str, InlineKeyboa
     rows = []
     if t.status == "open":
         rows.append([B("☑️ Fatta", callback_data=f"DD:{t.id}")])
+        rows.append(priority_row(t))
     elif t.status == "done":
         rows.append([B("↩️ Riapri", callback_data=f"RO:{t.id}")])
     media = []
@@ -175,15 +193,17 @@ def since_for(days: int, tz: ZoneInfo, now: datetime) -> datetime:
 def added(tasks: list[Task], transcript: str | None = None) -> tuple[str, InlineKeyboardMarkup]:
     if len(tasks) == 1:
         t = tasks[0]
-        text = f"➕ Aggiunta: <b>{escape(t.title)}</b>"
+        text = f"➕ Aggiunta: {prio_icon(t.priority)} <b>{escape(t.title)}</b>"
         if transcript:
             text += f"\n\n🎙 <i>«{escape(_short(transcript, 600))}»</i>"
         elif t.title in PLACEHOLDERS:
             text += "\nTocca ➕ Dettagli per descriverla."
-        kb = InlineKeyboardMarkup([[B("↩️ Annulla", callback_data=f"UA:{t.id}"),
+        kb = InlineKeyboardMarkup([priority_row(t, ":c"),
+                                   [B("↩️ Annulla", callback_data=f"UA:{t.id}"),
                                     B("➕ Dettagli", callback_data=f"E:{t.id}")]])
         return text, kb
-    text = f"➕ Aggiunte {len(tasks)} attività:\n" + "\n".join(f"• {escape(t.title)}" for t in tasks)
+    text = f"➕ Aggiunte {len(tasks)} attività:\n" + "\n".join(
+        f"{prio_icon(t.priority)} {escape(t.title)}" for t in tasks)
     ids = ",".join(str(t.id) for t in tasks)
     kb = InlineKeyboardMarkup([[B("↩️ Annulla tutte", callback_data=f"UA:{ids}")]]) if len(ids) <= 58 else None
     return text, kb
@@ -239,8 +259,10 @@ HELP = f"""<b>Come funziona</b>
 • Una <b>foto</b> con didascalia diventa un'attività con foto; una foto senza didascalia subito dopo un'attività si aggiunge a quella.
 • Un <b>vocale</b> viene trascritto e diventa un'attività.
 
+<b>Priorità</b>: 🔴 alta, 🟡 normale, ⚪ bassa. Si sceglie con i bottoni dopo averla aggiunta, oppure si scrive all'inizio: <code>urgente: caldaia</code> (o <code>! caldaia</code>) per alta, <code>con calma: cantina</code> per bassa. Nei vocali basta dire «urgente».
+
 <b>Vedere</b>: usa i bottoni in basso.
-• <b>{BTN_TODO}</b>: cosa c'è da fare. Tocca un'attività per dettagli e foto, ☑️ quando è fatta (con ↩️ per annullare).
+• <b>{BTN_TODO}</b>: cosa c'è da fare, prima le urgenti. Tocca un'attività per dettagli e foto, ☑️ quando è fatta (con ↩️ per annullare).
 • <b>{BTN_DONE}</b>: cosa è stato fatto, da chi e quando, negli ultimi giorni.
 
 Non ti scrivo mai di mia iniziativa: le liste le vedi solo quando le chiedi."""

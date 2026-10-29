@@ -1,6 +1,6 @@
 [project]
 name = "taskbot"
-version = "0.2.0"
+version = "0.3.0"
 description = "Telegram bot for a shared household to-do list"
 readme = "README.md"
 requires-python = ">=3.11"

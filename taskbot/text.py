@@ -35,20 +35,59 @@ def split_title(text: str) -> tuple[str, str]:
     return _clean(first), rest
 
 
-def parse_tasks(text: str) -> list[tuple[str, str]]:
-    """A message is one task (first line = title, other lines = details).
+HIGH, NORMAL, LOW = 1, 2, 3
+
+_SEP = r"(?:\s*[:,.\-–—]\s*|\s+|$)"
+_PRIO_START = [
+    (HIGH, re.compile(r"^\s*!+\s*")),
+    (HIGH, re.compile(rf"^\s*(?:urgente|urgentissimo|importante|subito|priorit[aà] alta|alta priorit[aà]){_SEP}",
+                      re.IGNORECASE)),
+    (LOW, re.compile(rf"^\s*(?:con calma|quando capita|quando puoi|non urgente|priorit[aà] bassa|"
+                     rf"bassa priorit[aà]){_SEP}", re.IGNORECASE)),
+]
+_PRIO_ANYWHERE = [  # for dictation, where people say "...è urgente" at the end
+    (LOW, re.compile(r"\b(?:non (?:è )?urgente|con calma|quando capita|priorit[aà] bassa)\b", re.IGNORECASE)),
+    (HIGH, re.compile(r"\b(?:urgente|urgentissimo|priorit[aà] alta)\b", re.IGNORECASE)),
+]
+
+
+def take_priority(text: str) -> tuple[int | None, str]:
+    """A leading "!" or "urgente:" means high, "con calma:" low. Returns (priority or None, rest)."""
+    for prio, rx in _PRIO_START:
+        m = rx.match(text)
+        if m and text[m.end():].strip():
+            return prio, text[m.end():]
+    return None, text
+
+
+def spoken_priority(text: str) -> int | None:
+    for prio, rx in _PRIO_ANYWHERE:
+        if rx.search(text):
+            return prio
+    return None
+
+
+def parse_tasks(text: str) -> list[tuple[str, str, int]]:
+    """A message is one task (first line = title, other lines = details) -> (title, notes, priority).
 
     Exception: a bulleted/numbered list ("- buy bulbs\\n- call plumber") becomes one task per item.
+    A priority word at the start ("urgente: ...", "! ...", "con calma: ...") applies to the whole
+    message; one at the start of a list item applies to that item.
     """
+    msg_prio, text = take_priority(text.strip())
     lines = [ln for ln in text.strip().splitlines() if ln.strip()]
     if not lines:
         return []
     bulleted = [ln for ln in lines if _BULLET.match(ln)]
     if len(bulleted) >= 2 and len(bulleted) >= len(lines) - 1:
         # Optional heading line ("Casa:") followed by a list: the heading is dropped.
-        items = [_BULLET.sub("", ln) for ln in lines if _BULLET.match(ln)]
-        return [split_title(it) for it in items if it.strip()]
-    return [split_title(_BULLET.sub("", text.strip(), count=1))]
+        out = []
+        for ln in bulleted:
+            item_prio, item = take_priority(_BULLET.sub("", ln))
+            if item.strip():
+                out.append((*split_title(item), item_prio or msg_prio or NORMAL))
+        return out
+    return [(*split_title(_BULLET.sub("", text.strip(), count=1)), msg_prio or NORMAL)]
 
 
 def clean_transcript(text: str) -> str:
